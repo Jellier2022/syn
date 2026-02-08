@@ -1,0 +1,260 @@
+###filter using population frequency and conservatism
+ANNOVAR_DIR="path"
+HUMANDB_DIR="${ANNOVAR_DIR}/humandb"
+perl $ANNOVAR_DIR/table_annovar.pl variants_for_annovar.avinput $HUMANDB_DIR \
+  -buildver hg19 \
+  -out annovar_allfreq \
+  -remove \
+  -protocol 1000g2015aug_all,exac03,gnomad_exome \
+  -operation f,f,f \
+  -nastring .
+
+#gnomad211
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO/AF\t%INFO/AF_eas\n' \
+ gnomad.genomes.r2.1.1.sites.13.vcf.bgz \
+ > gnomad211_genomes_chr13_freq.txt
+
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO/AF\t%INFO/AF_eas\n' \
+ gnomad.genomes.r2.1.1.sites.17.vcf.bgz \
+ > gnomad211_genomes_chr17_freq.txt
+
+jobs
+fg %1
+#r
+library(data.table)
+my <- variants_for_annovar.avinput[,-3]
+
+gn13 <- fread("path/gnomad211_genomes_chr13_freq.txt")
+gn17 <- fread("path/gnomad211_genomes_chr17_freq.txt")
+
+setnames(my, c("CHROM","POS","REF","ALT"))
+my[] <- lapply(my, as.character)
+
+setnames(gn13, c("CHROM","POS","REF","ALT","AF","AF_eas"))
+setnames(gn17, c("CHROM","POS","REF","ALT","AF","AF_eas"))
+
+gn=rbindlist(list(gn13, gn17), use.names = TRUE, fill = TRUE)
+gn[] <- lapply(gn, as.character)
+
+merged <- merge(my, gn, by=c("CHROM","POS","REF","ALT"), all.x=TRUE)
+fwrite(merged, "variants_with_gnomad_freq.txt", sep="\t")
+
+#merge
+gnomAD=fread("path/annovar_gnomad.exon.hg19_multianno.txt")
+exan=fread("path/annovar_allfreq.hg19_multianno.txt")
+brca_syn_list <- fread("path/brca_syn_list.csv")
+setDT(gnomAD)
+setDT(exan)
+setDT(merged)
+
+# 统一列名
+setnames(gnomAD,
+         c("Chr", "Start", "Ref", "Alt"),
+         c("CHROM", "POS", "REF", "ALT"))
+
+setnames(exan,
+         c("Chr", "Start", "Ref", "Alt"),
+         c("CHROM", "POS", "REF", "ALT"))
+
+for (dt in list(gnomAD, exan, merged)) {
+  dt[, CHROM := as.character(CHROM)]
+  dt[, POS   := as.integer(POS)]
+  dt[, REF   := as.character(REF)]
+  dt[, ALT   := as.character(ALT)]
+}
+
+setkey(gnomAD, CHROM, POS, REF, ALT)
+setkey(exan,   CHROM, POS, REF, ALT)
+setkey(merged,     CHROM, POS, REF, ALT)
+merged_all <- merged[gnomAD]
+merged_all <- exan[merged_all]
+
+setDT(merged_all)
+setDT(brca_syn_list)
+
+setnames(merged_all, c("CHROM","POS","REF","ALT"),
+                     c("chr","pos","ref","alt"), skip_absent=TRUE)
+
+brca_syn_annot <- merge(
+  brca_syn_list,
+  merged_all,
+  by = "pos",
+  all.x = TRUE
+)
+
+fwrite(brca_syn_annot,file='brca_syn_annot.csv')
+
+brca_syn_annot[, AF_num := as.numeric(AF)]
+
+brca_syn_annot_filter <- brca_syn_annot[
+  is.na(AF_num) | AF_num < 0.05
+]
+dim(brca_syn_annot_filter)
+summary(brca_syn_annot_filter$AF_num)
+fwrite(brca_syn_annot_filter,file='brca_syn_annot_filter.csv')
+
+#------------------------in silico prediction------------------------
+#fastq sequence around 100bp up and downstram
+#1.CSV → BED
+CSV="path/brca_syn_annot_filter.csv"
+BED="syn_201bp.bed"
+
+awk -F',' 'BEGIN{OFS="\t"}
+NR>1{
+  gene=$2
+  chr=$5
+  pos=$1
+  start = pos - 101   # 0-based
+  end   = pos + 100
+  id = gene "_" $9   # gene_cDNAchange
+  if(gene=="BRCA1"){
+    strand="-"
+  } else {
+    strand="+"
+  }
+  print chr, start, end, id, 0, strand
+}' "$CSV" > "$BED"
+head "$BED"
+
+#2. WT sequence
+WT_FA="syn_wt.fa"
+
+bedtools getfasta \
+  -fi "path/hs37d5.fa" \
+  -bed "$BED" \
+  -s \
+  -name \
+  > "$WT_FA"
+head "$WT_FA"
+
+#3. MUT sequence
+MUT_FA="syn_mut.fa"
+
+awk -F',' 'BEGIN{OFS="\t"}
+NR>1{
+  id=$2"_"$9"::"$5":"$1-101"-"$1+100
+  gene=$1
+  ref=$6
+  alt=$7
+  print id, gene, ref, alt
+}' "$CSV" > ref_alt.tsv
+
+head  ref_alt.tsv
+
+# 
+awk '
+BEGIN {
+    comp["A"]="T"; comp["T"]="A"; comp["C"]="G"; comp["G"]="C"
+    while((getline < "ref_alt.tsv") > 0){
+        ref[$1] = $3
+        alt[$1] = $4
+        print "Loaded:", $1, "REF:", $3, "ALT:", $4 > "/dev/stderr"
+    }
+}
+
+/^>/ {
+    header = substr($0,2)
+    sub(/\([+-]\)$/, "", header)
+    print "Processing:", header > "/dev/stderr"
+
+    if (!(header in ref)) {
+        print "ERROR: header not found:", header > "/dev/stderr"
+        exit 1
+    }
+
+    r = ref[header]
+    a = alt[header]
+
+    getline seq
+    mid = 101
+    wt_base = substr(seq, mid, 1)
+    print "WT base at mid:", wt_base > "/dev/stderr"
+    newseq=""
+    if(wt_base == r){
+        newseq = substr(seq,1,mid-1) a substr(seq,mid+1)
+        print "Matched positive strand", header > "/dev/stderr"
+    }
+    else if(wt_base == comp[r]){
+        alt_comp = comp[a]
+        newseq = substr(seq,1,mid-1) alt_comp substr(seq,mid+1)
+        print "Matched negative strand", header > "/dev/stderr"
+    }
+    else{
+        print "ERROR: WT base does not match expected for header", header, "WT:", wt_base, "REF:", r > "/dev/stderr"
+        exit 1
+    }
+
+    print ">" header "_mut"
+    print newseq
+}
+' syn_wt.fa > syn_mut.fa
+
+awk '
+FNR==NR {
+    if ($0 ~ /^>/) {
+        id=$0
+        sub(/\(.*/, "", id) 
+        wt[id]=$0
+        seq=""
+    } else {      wt[id]=wt[id] "\n" $0    }
+    next}
+{    if ($0 ~ /^>/) {
+        id=$0
+        sub(/_mut.*/, "", id)
+        mut[id]=$0
+        seq=""
+    } else {
+        mut[id]=mut[id] "\n" $0    }
+}
+
+END {
+    for (id in wt) {
+        if (id in mut) {
+            print id
+            print wt[id]
+            print mut[id]
+            print ""
+        }
+    }
+}
+' syn_wt.fa syn_mut.fa > syn_wt_mut.paired.fa
+
+
+###m6A sites prediction
+#m6ASNP
+gunzip -c path/knownGene.txt.gz | \
+awk -F'\t' 'BEGIN{OFS="\t"} {
+    gsub(/^chr/, "", $2); 
+    print $0; 
+}' > path/knownGene_hg19_final.txt
+
+
+##arrange syn_list into vcf format
+awk -F',' 'BEGIN{
+    OFS="\t";
+    print "#CHROM","POS","ID","REF","ALT","QUAL","FILTER","INFO"
+}
+NR>1 {
+    info="gene=" $1 ";mutation=" $2 ";mutation_type=" $3 ";cDNAchange=" $9 ";AAchange=" $10 ";transcript=" $12 ";Pathogenicity=" $13;
+    print "chr"$4, $5, ".", $6, $7, ".", ".", info
+}' path/brca_syn_list.csv > path/brca_syn_list.vcf
+
+
+ awk -F',' 'BEGIN{
+    OFS="\t";
+    print "#CHROM","POS","ID","REF","ALT","QUAL","FILTER","INFO"
+}
+NR>1 {
+    info="gene=" $1 ";mutation=" $2 ";mutation_type=" $3 ";cDNAchange=" $9 ";AAchange=" $10 ";transcript=" $12 ";Pathogenicity=" $13;
+    print $4, $5, ".", $6, $7, ".", ".", info
+}'  path/brca_syn_list.csv > path/brca_syn_list_nochr.vcf
+
+# m6ASNP evaluation
+java -jar "path/m6ASNP.jar" -predict \
+    -i path/brca_syn_list_nochr.vcf \
+    -a "path/knownGene_hg19.txt"\
+    -g "path/hg19.2bit" \
+    -o brca_syn_list_m6ASNP.txt
+
+
+
