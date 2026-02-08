@@ -1,0 +1,425 @@
+B=read.csv("path/test.csv")
+library(survival); library(survminer); library(dplyr); library(broom)
+library(purrr); library(ggplot2); library(coxphf); library(boot)
+library(tidyr); library(forcats); library(data.table);library(survRM2)
+
+####--------------HRD relative----------
+subB <- B[B$BRCA_CELL1 %in% c("BRCAwt_c.1365mut", "BRCAwt_c.1365wt")  & B$HRD  %in% c('0','1'), ]
+fisher.test(table(subB$BRCA_CELL1, subB$HRD), alternative = "two.sided")  #p-value = 0.03762
+table(subB$BRCA_CELL1, subB$HRD)
+tab <- table(subB$BRCA_CELL1, subB$HRD)
+
+df_plot <- as.data.frame(tab)
+colnames(df_plot) <- c("Group", "HRD", "Count")
+
+df_plot$HRD <- factor(df_plot$HRD,
+                      levels = c(0, 1),
+                      labels = c("HRD Negative", "HRD Positive"))
+
+df_plot_prop <- df_plot %>%
+  group_by(Group) %>%
+  mutate(prop = Count / sum(Count)) %>%
+  ungroup()
+
+ggplot(df_plot_prop, aes(x = Group, y = prop, fill = HRD)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_text(
+    data = subset(df_plot_prop, HRD == "HRD Positive"),
+    aes(label = scales::percent(prop, accuracy = 1)),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    size = 9
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = c("#BDBDBD", "#2C7FB8")) +
+  labs(
+    x = NULL,
+    y = "Proportion",
+    fill = NULL
+  ) +
+  theme_classic(base_size = 14)
+
+
+####--------------KM survival curve----------
+##PFS
+sfit<- survfit(Surv(PARPiPFS, PARP_recurr)~BRCA_Fsyn, data=B)
+ggsurvplot(sfit, pval = T, risk.table = T,conf.int = F,legend=c(0.85,0.85))
+pairwise_survdiff(Surv(PARPiPFS, PARP_recurr)~BRCA_Fsyn, data=B, p.adjust.method = "BH",  rho = 0)
+
+sfit<- survfit(Surv(PARPiPFS, PARP_recurr)~BRCA&Fsyn, data=B)
+ggsurvplot(sfit, pval = T, risk.table = T,conf.int = F,legend=c(0.85,0.85))
+
+sfit<- survfit(Surv(PARPiPFS, PARP_recurr)~BRCA_CELL1, data=B)
+ggsurvplot(sfit, pval = T, risk.table = T,conf.int = F,legend=c(0.85,0.85))
+pairwise_survdiff(Surv(PARPiPFS, PARP_recurr)~BRCA_CELL1, data=B, p.adjust.method = "BH",  rho = 0)
+
+
+#OS
+sfit<- survfit(Surv(OS, Status)~BRCA_Fsyn, data=B)
+ggsurvplot(sfit, pval = T, risk.table = T,conf.int = F,legend=c(0.85,0.85))
+pairwise_survdiff(Surv(OS, Status)~BRCA_Fsyn, data=B, p.adjust.method = "BH",  rho = 0)
+
+sfit<- survfit(Surv(OS, Status)~BRCA&Fsyn, data=B)
+ggsurvplot(sfit, pval = T, risk.table = T,conf.int = F,legend=c(0.85,0.85))
+
+sfit<- survfit(Surv(OS, Status)~BRCA_CELL1, data=B)
+ggsurvplot(sfit, pval = T, risk.table = T,conf.int = F,legend=c(0.85,0.85))
+pairwise_survdiff(Surv(OS, Status)~BRCA_CELL1, data=B, p.adjust.method = "BH",  rho = 0)
+
+
+#3-year OS rate
+
+s36 <- summary(sfit, times = 36)
+surv_36m <- data.frame(
+  group   = gsub("BRCA_Fsyn=", "", s36$strata),
+  surv_36 = s36$surv,
+  se      = s36$std.err,
+  n_risk  = s36$n.risk
+)
+
+surv_36m
+
+surv_36m$n_total <- as.numeric(n_total[surv_36m$group])
+surv_36m$n_alive <- round(surv_36m$surv_36 * surv_36m$n_total)
+
+
+groups <- surv_36m$group
+pairwise_fisher <- list()
+
+for (i in 1:(length(groups) - 1)) {
+  for (j in (i + 1):length(groups)) {
+    
+    g1 <- groups[i]
+    g2 <- groups[j]
+    
+    tab <- matrix(
+      c(
+        surv_36m$n_alive[surv_36m$group == g1],
+        surv_36m$n_total[surv_36m$group == g1] -
+          surv_36m$n_alive[surv_36m$group == g1],
+        
+        surv_36m$n_alive[surv_36m$group == g2],
+        surv_36m$n_total[surv_36m$group == g2] -
+          surv_36m$n_alive[surv_36m$group == g2]
+      ),
+      nrow = 2,
+      byrow = TRUE
+    )
+    
+    pairwise_fisher[[paste(g1, "vs", g2)]] <- fisher.test(tab)
+  }
+}
+
+pairwise_fisher
+
+####--------------median follow-up--------------------------------
+follow_fit <- survfit(Surv(PARPiPFS, 1 - PARP_recurr) ~ 1,data = B)
+summary(follow_fit)$table
+
+follow_fit_group <- survfit(Surv(PARPiPFS, 1 - PARP_recurr) ~ BRCA_CELL1, data = B)
+summary(follow_fit_group)$table[, "median"]
+
+
+
+
+
+
+# ----------24m-RMST-------------------
+subB <- B[B$BRCA %in% '0', ]
+table(subB$c.1365)
+rmst <- rmst2(
+  time = subB$PARPiPFS,
+  status = subB$PARP_recurr,
+  arm = subB$c.1365, 
+  tau = 24    
+)
+rmst
+
+table(subB$Fsyn)
+rmst <- rmst2(
+  time = subB$PARPiPFS,
+  status = subB$PARP_recurr,
+  arm = subB$Fsyn,
+  tau = 24    
+)
+rmst 
+
+subB <- B[B$BRCA %in% '0', ]
+subB$group1 <- ifelse(subB$BEV == 0 & subB$PARPtime == 1, 1, 0)
+subB$group2 <- ifelse(subB$BEV == 1 & subB$PARPtime == 1, 1, 0)
+subB$groupe3 <- ifelse(subB$BEV == 0 & subB$PARPtime == 2, 1, 0)
+subB$group4 <- ifelse(subB$BEV == 1 & subB$PARPtime == 2, 1, 0)
+
+subB$PARP_AL <- ifelse(subB$PARP == 1, 1, 0)
+subB$PARP_NL <- ifelse(subB$PARP == 2, 1, 0)
+subB$PARP_FZ <- ifelse(subB$PARP == 3, 1, 0)
+
+#-------------------------RMST of Fsyn-------------------------
+subgroup_vars <- c(
+  "Age_cat", 'group1','group2','group3','group4',"PARP_AL","PARP_NL","PARP_FZ",
+  "ClinicalResponse", "CA125befM", "ECOGbefM",
+  "NACT", "Debulking",  "FIGOstage"
+)
+
+rmst_results <- list()
+
+for (var in subgroup_vars) {
+  if (!var %in% colnames(subB)) next
+  levels_var <- na.omit(unique(subB[[var]]))
+  for (lv in levels_var) {
+    dat <- subB[subB[[var]] == lv, ]
+    if (length(unique(dat$Fsyn)) != 2) {
+      message(sprintf("Skipped %s=%s: not 2 arms", var, lv))
+      next
+    }
+    tab_n <- table(dat$Fsyn)
+    if (any(tab_n < 5)) {
+      message(sprintf("Skipped %s=%s: small n", var, lv))
+      next
+    }
+    tab_e <- tapply(dat$PARP_recurr, dat$Fsyn, sum, na.rm = TRUE)
+    if (any(tab_e == 0)) {
+      message(sprintf("Skipped %s=%s: zero events in one arm", var, lv))
+      next
+    }
+
+    fit <- tryCatch(
+      rmst2(
+        time   = dat$PARPiPFS,
+        status = dat$PARP_recurr,
+        arm    = dat$Fsyn,
+        tau    = 24
+      ),
+      error = function(e) {
+        message(sprintf("Skipped %s=%s: rmst2 error", var, lv))
+        return(NULL)
+      }
+    )
+    if (is.null(fit)) next
+    
+    res <- fit$unadjusted.result
+    diff_row <- "RMST (arm=1)-(arm=0)"
+    if (!diff_row %in% rownames(res)) next
+    sf <- survfit(Surv(PARPiPFS, PARP_recurr) ~ Fsyn, data = dat)
+    sf_tab <- summary(sf, rmean = 24)$table
+    rmst_0 <- sf_tab["Fsyn=0", "rmean"]
+    rmst_1 <- sf_tab["Fsyn=1", "rmean"]
+
+    rmst_results[[length(rmst_results) + 1]] <- data.frame(
+      subgroup = var,
+      level    = lv,
+      n_0      = tab_n["0"],
+      n_1      = tab_n["1"],
+      rmst_0   = rmst_0,
+      rmst_1   = rmst_1,
+      diff     = res[diff_row, "Est."],
+      lower95  = res[diff_row, "lower .95"],
+      upper95  = res[diff_row, "upper .95"],
+      pvalue   = res[diff_row, "p"]
+    )
+  }
+}
+
+rmst_results_df <- do.call(rbind, rmst_results)
+rmst_results_df
+
+#RMST forest figure
+{ rmst_results_df$n=rmst_results_df$n_0+rmst_results_df$n_1
+  gene <- paste0(rmst_results_df$subgroup, "_",rmst_results_df$level, " n=",rmst_results_df$n)
+  RMST.diff <- rmst_results_df$diff
+  lower <- rmst_results_df$lower95
+  upper <- rmst_results_df$upper95
+  pVal <- rmst_results_df$pvalue
+  
+  n <- nrow(rmst_results_df)
+  ylim <- c(1, n + 1)
+
+  pVal.text <- ifelse(pVal < 0.001, "<0.001", sprintf("%.3f", pVal))
+  RMST.text <- paste0(sprintf("%.2f", RMST.diff), " (", 
+                      sprintf("%.2f", lower), "–", 
+                      sprintf("%.2f", upper), ")")
+
+  {layout(matrix(c(1,2), nc = 2), widths = c(3,2))
+
+    par(mar = c(4, 2.5, 2, 0))
+    plot(1, xlim = c(min(lower) - 2, max(upper) + 2), ylim = ylim, type = "n",
+         axes = FALSE, xlab = "", ylab = "")
+    text.cex <- 0.7
+    text(0, n:1, gene, adj = 0, cex = text.cex)
+    text(6, n:1, pVal.text, adj = 1, cex = text.cex)
+    text(6, n + 1, "P value", font = 2, adj = 1)
+    text(11, n:1, RMST.text, adj = 1, cex = text.cex)
+    text(13, n + 1, "RMST in months (95% CI)", font = 2, adj = 1)
+
+    par(mar = c(4, 0, 2, 1))
+    plot(1,
+         xlim = c(min(lower) - 1, max(upper) + 1), ylim = ylim,
+         type = "n", axes = FALSE, xlab = "RMST Difference (months)", ylab = "")
+    arrows(lower, n:1, upper, n:1, angle = 90, code = 3, length = 0.05, lwd = 2)
+    abline(v = 0, col = "grey", lty = 2)  # 零差值虚线
+    points(RMST.diff, n:1, pch = 15, cex = 0.8, col = "blue")
+    axis(1)}}
+
+
+#-------------------------c.1365-------------------------
+rmst_results <- list()
+for (var in subgroup_vars) {
+  if (!var %in% colnames(subB)) next
+  levels_var <- na.omit(unique(subB[[var]]))
+  for (lv in levels_var) {
+  dat <- subB[subB[[var]] == lv, ]
+
+    if (length(unique(dat$Fsyn)) != 2) {
+      message(sprintf("Skipped %s=%s: not 2 arms", var, lv))
+      next
+    }
+    
+    tab_n <- table(dat$Fsyn)
+    if (any(tab_n < 5)) {
+      message(sprintf("Skipped %s=%s: small n", var, lv))
+      next
+    }
+    
+    tab_e <- tapply(dat$PARP_recurr, dat$c.1365_0.6, sum, na.rm = TRUE)
+    if (any(tab_e == 0)) {
+      message(sprintf("Skipped %s=%s: zero events in one arm", var, lv))
+      next
+    }
+
+    fit <- tryCatch(
+      rmst2(
+        time   = dat$PARPiPFS,
+        status = dat$PARP_recurr,
+        arm    = dat$c.1365_0.6,
+        tau    = 24
+      ),
+      error = function(e) {
+        message(sprintf("Skipped %s=%s: rmst2 error", var, lv))
+        return(NULL)
+      }
+    )
+    if (is.null(fit)) next
+    
+    res <- fit$unadjusted.result
+    diff_row <- "RMST (arm=1)-(arm=0)"
+    if (!diff_row %in% rownames(res)) next
+    
+    sf <- survfit(Surv(PARPiPFS, PARP_recurr) ~ c.1365_0.6, data = dat)
+    sf_tab <- summary(sf, rmean = 24)$table
+    
+    rmst_0 <- sf_tab["c.1365_0.6=0", "rmean"]
+    rmst_1 <- sf_tab["c.1365_0.6=1", "rmean"]
+
+    rmst_results[[length(rmst_results) + 1]] <- data.frame(
+      subgroup = var,
+      level    = lv,
+      n_0      = tab_n["0"],
+      n_1      = tab_n["1"],
+      rmst_0   = rmst_0,
+      rmst_1   = rmst_1,
+      diff     = res[diff_row, "Est."],
+      lower95  = res[diff_row, "lower .95"],
+      upper95  = res[diff_row, "upper .95"],
+      pvalue   = res[diff_row, "p"]
+    )
+  }
+}
+
+rmst_results_df <- do.call(rbind, rmst_results)
+rmst_results_df
+
+
+
+#-------------multi cox -------------------
+res.cox <- coxph(Surv(PARPiPFS, PARP_recurr) ~ BRCA_Fsyn + BEV  + ClinicalResponse + CA125befM
+                 + ECOGbefM +debulking + FIGOstage, 
+                 data = B)
+
+s <- summary(res.cox)
+rt <- data.frame(
+  Variable = rownames(s$coefficients),
+  HR       = s$coefficients[, "exp(coef)"],
+  HR.95L   = s$conf.int[, "lower .95"],
+  HR.95H   = s$conf.int[, "upper .95"],
+  pvalue   = s$coefficients[, "Pr(>|z|)"]
+)
+
+rt <- rt[, c("Variable", "HR", "HR.95L", "HR.95H", "pvalue")]
+
+cox_table <- data.frame(
+  Variable = c(
+    "BRCAwt_Fsynmut",
+    "BRCAmut",
+    "BEV",
+    "ClinicalResponse",
+    "CA125befM",
+    "ECOGbefM",
+    "Debulking",
+    "FIGOstage"
+  ),
+  HR = sprintf("%.3f", rt$HR),
+  HR_95CI = sprintf("%.3f (%.3f–%.3f)",
+                    rt$HR, rt$HR.95L, rt$HR.95H),
+  pvalue = ifelse(
+    rt$pvalue < 0.001,
+    "<0.001",
+    sprintf("%.3f", rt$pvalue)
+  )
+)
+
+cox_table
+
+{gene <- c(
+  "BRCAwt_Fsynmut vs BRCAwt_Fsynwt",
+  "BRCAmut vs BRCAwt_Fsynwt",
+  "BEV combined",
+  "Clinical Response",
+  "CA125 Level",
+  "ECOG Performance Status",
+  "Debulking Surgery",
+  "FIGO stage"
+)
+  
+  Hazard.ratio <- paste0(  sprintf("%.3f", rt$HR),  " (",
+                           sprintf("%.3f", rt$HR.95L),  "–",  
+                           sprintf("%.3f", rt$HR.95H),  ")")
+  
+  pVal <- ifelse(rt$pvalue < 0.001,  "<0.001",  
+                 sprintf("%.3f", rt$pvalue))
+  
+  n <- nrow(rt)
+  ylim <- c(1, n + 1)
+  
+  layout(matrix(c(1,2), nc = 2), widths = c(3,2))
+  
+  ## 左侧文字
+  par(mar = c(4, 2.5, 2, 0))
+  plot(1, xlim = c(0, 3.2), ylim = ylim, type = "n",
+       axes = FALSE, xlab = "", ylab = "")
+  
+  text.cex <- 0.7
+  text(0, n:1, gene, adj = 0, cex = text.cex)
+  text(1.9, n:1, pVal, adj = 1, cex = text.cex)
+  text(1.9, n + 1, "P value", font = 2, adj = 1)
+  
+  text(3.1, n:1, Hazard.ratio, adj = 1, cex = text.cex)
+  text(3.1, n + 1, "HR (95% CI)", font = 2, adj = 1)
+  
+  par(mar = c(4, 0, 2, 1))
+  plot(1,
+       xlim = c(0, max(rt$HR.95H) * 1.1),     ylim = ylim,
+       type = "n",     axes = FALSE,     xlab = "Hazard ratio",     ylab = "")
+  
+  arrows(rt$HR.95L, n:1,       rt$HR.95H, n:1,       angle = 90, code = 3, length = 0.05, lwd = 2)
+  
+  abline(v = 1, col = "grey", lty = 2)
+  points(rt$HR, n:1, pch = 15, cex = 0.8, col = "red")
+  axis(1)
+}
+
+
+
+
+
+
+
