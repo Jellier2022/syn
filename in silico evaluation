@@ -219,8 +219,21 @@ END {
 }
 ' syn_wt.fa syn_mut.fa > syn_wt_mut.paired.fa
 
+###-------------------MMsplice-------------------
+conda activate python3.10
+python "path/test_mmsplice.py"
+gtf = "path/Homo_sapiens.GRCh37.75.gtf"
+vcf = "path/brca_list_syn.vcf.gz"
+fasta = 'path/hs37d5.fa'
 
-###m6A sites prediction
+sed 's/"//g' brca_fixed.vcf > brca_clean.vcf
+less -S brca_clean.vcf
+bgzip brca_clean.vcf
+tabix -p vcf brca_clean.vcf.gz
+
+python "path/run_mmsplice_test.py"
+
+###-------------------m6A sites prediction---------------
 #m6ASNP
 gunzip -c path/knownGene.txt.gz | \
 awk -F'\t' 'BEGIN{OFS="\t"} {
@@ -255,6 +268,18 @@ java -jar "path/m6ASNP.jar" -predict \
     -a "path/knownGene_hg19.txt"\
     -g "path/hg19.2bit" \
     -o brca_syn_list_m6ASNP.txt
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
