@@ -391,8 +391,7 @@ cox_table
   ylim <- c(1, n + 1)
   
   layout(matrix(c(1,2), nc = 2), widths = c(3,2))
-  
-  ## 左侧文字
+
   par(mar = c(4, 2.5, 2, 0))
   plot(1, xlim = c(0, 3.2), ylim = ylim, type = "n",
        axes = FALSE, xlab = "", ylab = "")
