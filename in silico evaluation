@@ -18,8 +18,8 @@ bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO/AF\t%INFO/AF_eas\n' \
  gnomad.genomes.r2.1.1.sites.17.vcf.bgz \
  > gnomad211_genomes_chr17_freq.txt
 
-jobs
-fg %1
+
+
 #r
 library(data.table)
 my <- variants_for_annovar.avinput[,-3]
@@ -47,7 +47,7 @@ setDT(gnomAD)
 setDT(exan)
 setDT(merged)
 
-# 统一列名
+
 setnames(gnomAD,
          c("Chr", "Start", "Ref", "Alt"),
          c("CHROM", "POS", "REF", "ALT"))
@@ -141,7 +141,7 @@ NR>1{
 
 head  ref_alt.tsv
 
-# 
+
 awk '
 BEGIN {
     comp["A"]="T"; comp["T"]="A"; comp["C"]="G"; comp["G"]="C"
